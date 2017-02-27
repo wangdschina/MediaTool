@@ -203,3 +203,11 @@ void CDirect3d::Clear( void )
 		m_queBlockPool.pop();
 	}
 }
+
+void CDirect3d::Front( USERDATA& userData )
+{
+	if (!m_queBlockPool.empty())
+	{
+		userData = m_queBlockPool.front();
+	}
+}

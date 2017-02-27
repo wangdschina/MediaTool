@@ -166,6 +166,10 @@ void CParseTask::runTask()
 					Sleep(50);
 				}
 				USERDATA userData;
+				userData.ulWidth = width;
+				userData.ulHeight = height;
+				userData.ulYStride = yStride;
+				userData.ulUVStride = uvStride;
 				userData.pszData = new char[height*yStride + height* uvStride/2 + height* uvStride/2];
 				ASSERT(userData.pszData != nullptr);
 				memcpy(userData.pszData, pY, height*yStride);

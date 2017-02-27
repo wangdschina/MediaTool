@@ -42,6 +42,7 @@ CMainWndDlg::CMainWndDlg(void)
 	m_pPlayBtn = nullptr;
 	m_pStopBtn = nullptr;
 	m_pOpenFileBtn = nullptr;
+	m_pSaveFileBtn = nullptr;
 	m_pLogRichEdit = nullptr;
 
 	m_pMediaWnd = nullptr;
@@ -113,6 +114,7 @@ void CMainWndDlg::InitWindow()
 	m_pPlayBtn = static_cast<CButtonUI*>(m_PaintManager.FindControl(_T("playBtn")));
 	m_pStopBtn = static_cast<CButtonUI*>(m_PaintManager.FindControl(_T("stopBtn")));
 	m_pOpenFileBtn = static_cast<CButtonUI*>(m_PaintManager.FindControl(_T("openFileBtn")));
+	m_pSaveFileBtn = static_cast<CButtonUI*>(m_PaintManager.FindControl(_T("saveFileBtn")));
 	m_pLogRichEdit = static_cast<CRichEditUI*>(m_PaintManager.FindControl(_T("logRichEdit")));
 
 	WindowImplBase::InitWindow();
@@ -275,6 +277,10 @@ void CMainWndDlg::OnClick( TNotifyUI& msg )
 	{
 		this->ClickOpenFileBtn();
 	}
+	else if (msg.pSender == m_pSaveFileBtn)
+	{
+		this->ClickSaveFileBtn();
+	}
 	else if (msg.pSender == m_pPlayProgress)
 	{
 		::MessageBox(NULL, _T(""), _T(""), 0);
@@ -386,6 +392,79 @@ void CMainWndDlg::ClickOpenFileBtn()
 	}
 }
 
+void CMainWndDlg::ClickSaveFileBtn()
+{
+	FastMutex::ScopedLock lock(m_mciMutex);
+
+	USERDATA userData;
+	m_d3d.Front(userData);
+	if (userData.ulWidth == 0)
+	{
+		LogMsg(WT_EVENTLOG_ERROR_TYPE, _T("未获取到图片信息"));
+		return;
+	}
+	
+	/*	 位图文件头		*/
+	BITMAPFILEHEADER bmpFileHeader;
+	ZeroMemory(&bmpFileHeader, sizeof(BITMAPFILEHEADER));
+	bmpFileHeader.bfType = 0x4d42;
+	bmpFileHeader.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD)*256 + userData.ulWidth*userData.ulHeight/*userData.ulHeight*userData.ulYStride + userData.ulHeight* userData.ulUVStride/2 + userData.ulHeight* userData.ulUVStride/2*/;
+	bmpFileHeader.bfReserved1 = 0;
+	bmpFileHeader.bfReserved2 = 0;
+	bmpFileHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD)*256;
+
+	/*	位图信息头		*/
+	BITMAPINFOHEADER bmp_infoheader;
+	ZeroMemory(&bmp_infoheader, sizeof(BITMAPINFOHEADER));
+	bmp_infoheader.biSize = sizeof(BITMAPINFOHEADER);
+	bmp_infoheader.biWidth = userData.ulWidth;
+	bmp_infoheader.biHeight = userData.ulHeight;
+	bmp_infoheader.biPlanes = 1;
+	bmp_infoheader.biBitCount = 8;
+	bmp_infoheader.biCompression = BI_RGB;
+	bmp_infoheader.biSizeImage = 0;			//图像大小，无压缩的数据，这里可以为0
+	bmp_infoheader.biXPelsPerMeter = 0;
+	bmp_infoheader.biYPelsPerMeter = 0;
+	bmp_infoheader.biClrUsed = 0;
+	bmp_infoheader.biClrImportant = 0;
+
+	//构造灰度图的调色版
+	RGBQUAD rgbquad[256];
+	for(int i = 0; i < 256; i++)
+	{
+		rgbquad[i].rgbBlue = i;
+		rgbquad[i].rgbGreen = i;
+		rgbquad[i].rgbRed = i;
+		rgbquad[i].rgbReserved = 0;
+	}
+
+	SYSTEMTIME stLocalTime;
+	GetLocalTime(&stLocalTime);
+
+	tstring strDirPath = CStringUtil::Format(_T("%simage\\"), CPath::GetModulePath(g_hModule).c_str());
+	tstring strImageFilePath = CStringUtil::Format(_T("%s%04d%02d%02d%02d%02d%02d.bmp"), strDirPath.c_str(), 
+		stLocalTime.wYear, stLocalTime.wMonth, stLocalTime.wDay, stLocalTime.wHour, stLocalTime.wMinute, stLocalTime.wSecond);
+	CPath::CreateDirectoryW(strImageFilePath.c_str(), NULL);
+
+	BOOL bFileCreated = !CPath::IsFileExist(strImageFilePath.c_str());
+	FILE* fp = _tfopen(strImageFilePath.c_str(), _T("wb"));
+	if (fp != NULL)
+	{
+		fwrite(&bmpFileHeader, sizeof(BITMAPFILEHEADER), 1, fp);
+		fwrite(&bmp_infoheader, sizeof(BITMAPINFOHEADER), 1, fp);
+		fwrite(&rgbquad, sizeof(RGBQUAD)*256, 1, fp);
+
+		for (int n = userData.ulHeight - 1; n >= 0; --n)
+		{
+			fwrite(userData.pszData + n*userData.ulWidth, userData.ulWidth, 1, fp);
+		}
+
+		fclose(fp);
+
+		LogMsg(WT_EVENTLOG_INFORMATION_TYPE, _T("图片保存至 %s%s"), strDirPath.c_str(), strImageFilePath.c_str());
+	}
+}
+
 void CMainWndDlg::OnTimer( UINT_PTR nIDEvent )
 {
 	if (nIDEvent == 1)
@@ -452,211 +531,6 @@ void CMainWndDlg::OnSetFocus( TNotifyUI& msg )
 	if (msg.pSender == m_pPlayProgress)
 	{
 	}
-}
-
-DWORD WINAPI CMainWndDlg::ParseMediaFile( LPVOID lpvData )
-{
-	CMainWndDlg* pMainDlg = static_cast<CMainWndDlg*>(lpvData);
-	tstring strPath = pMainDlg->m_strPathName;
-
-
-	/*	获取解码库的信息	*/
-	H264_LIBINFO_S    lib_info;
-	if ( 0 == Hi264DecGetInfo(&lib_info) )
-	{
-		LogMsg(WT_EVENTLOG_INFORMATION_TYPE, _T("版本: %s\n版权: %s\n\n能力集: 0x%x\n"), CStringUtil::AnsiToTStr(lib_info.sVersion).c_str(), CStringUtil::AnsiToTStr(lib_info.sCopyRight).c_str(), lib_info.uFunctionSet);
-	}
-	else
-	{
-		LogMsg(WT_EVENTLOG_INFORMATION_TYPE, _T("查询解码库版本信息失败"));
-	}
-
-	pMainDlg->m_pAvi = AVI_open_input_file((CStringUtil::TStrToAnsi(strPath)).c_str(), 1);
-	if (nullptr == pMainDlg->m_pAvi)
-	{
-		LogMsg(WT_EVENTLOG_ERROR_TYPE, _T("无法打开 H264 文件 %s \n"), strPath.c_str());
-		goto exit;
-	}
-	LogMsg(WT_EVENTLOG_INFORMATION_TYPE, _T("解码文件: %s"), strPath.c_str());
-	pMainDlg->ClickPlayBtn(STR_PAUSE, true);
-
-	/*	设置解码器属性	*/
-	H264_DEC_ATTR_S   dec_attrbute;
-	memset(&dec_attrbute, 0x00, sizeof(dec_attrbute));
-	dec_attrbute.uPictureFormat = 0x00;		/*	输出图像格式，0x00表示4:2:0	*/
-	dec_attrbute.uBufNum        = 16;		/*	参考帧的缓冲区数目			*/
-	dec_attrbute.uPicWidthInMB  = 120;		/*	1080p	*/
-	dec_attrbute.uPicHeightInMB = 68;		/*	1080p	*/
-	dec_attrbute.uStreamInType  = 0x00;		/* 输入码流格式  "00 00 01" or "00 00 00 01"	*/
-	dec_attrbute.pUserData  = nullptr;   // 无用户数据
-	
-	dec_attrbute.uWorkMode = 0x31;		/* bit0 = 1: H.264 输出模式; bit0 = 0: 快速输出模式 */
-	//dec_attrbute.uWorkMode |= 0x10;	/* bit4 = 1:  激活反交错;    bit4 = 0: disable 反交错 */
-	//dec_attrbute.uWorkMode |= 0x20;		/* 开启多线程	*/
-	
-
-	HI_HDL hDecoder = Hi264DecCreate(&dec_attrbute);		/*	创建解码器	*/
-	if(nullptr ==  hDecoder)
-	{
-		LogMsg(WT_EVENTLOG_ERROR_TYPE, _T("解码器创建失败"));
-		goto exit;
-	}
-	
-	LARGE_INTEGER lpFrequency;
-	QueryPerformanceFrequency(&lpFrequency);
-	LARGE_INTEGER timeStart;
-	QueryPerformanceCounter(&timeStart);
-
-	HI_S32 end = 0;
-	HI_U8  buf[BUFF_LEN];	/*	码流缓冲区	*/
-	H264_DEC_FRAME_S  dec_frame;
-	HI_U32 pic_cnt = 0;
-	HI_U32 ImageEnhanceEnable = 1;
-	HI_U32 StrenthCoeff = 40;	/*	图像增强系数	*/
-	HI_U32 tmpW = 0;
-	HI_U32 tmpH = 0;
-	FILE*  yuv = fopen(CStringUtil::TStrToAnsi(CPath::GetModulePath() + _T("temp.yuv")).c_str(), "w+b");
-	ASSERT(yuv != nullptr);
-	/* 解码 h264 流文件 */
-	while (!end)
-	{
-		HI_U32	len = AVI_read_frame(pMainDlg->m_pAvi, (char*)buf);
-		HI_U32  flags = (len > 0) ? 0 : 1;		/*	码流是否结束标志	*/
-
-		/*	对输入的一段码流进行解码并按帧输出图像	*/
-		HI_S32 result = Hi264DecFrame(hDecoder, buf, len, 0, &dec_frame, flags);
-		while(HI_H264DEC_NEED_MORE_BITS  !=  result)
-		{
-			if(HI_H264DEC_NO_PICTURE ==  result)   //flush over and all the remain picture are output
-			{
-				end = 1;		/*	解码器内所有图像都已输出，解码结束	*/
-				break;
-			}
-
-			if(HI_H264DEC_OK == result)   /*	有一帧图像输出	*/
-			{
-				if (ImageEnhanceEnable)    //	图像增强
-				{
-					Hi264DecImageEnhance(hDecoder, &dec_frame, StrenthCoeff);
-				}
-
-				const HI_U8 *pY = dec_frame.pY;
-				const HI_U8 *pU = dec_frame.pU;
-				const HI_U8 *pV = dec_frame.pV;
-				HI_U32 width    = dec_frame.uWidth;
-				HI_U32 height   = dec_frame.uHeight - dec_frame.uCroppingBottomOffset;
-				HI_U32 yStride  = dec_frame.uYStride;
-				HI_U32 uvStride = dec_frame.uUVStride;
-
-				pic_cnt++;
-				while (pMainDlg->m_d3d.Size() >= MAX_MEMORY_POOL)
-				{
-					Sleep(50);
-				}
-				USERDATA userData;
-				userData.pszData = new char[height*yStride + height* uvStride/2 + height* uvStride/2];
-				ASSERT(userData.pszData != nullptr);
-				memcpy(userData.pszData, pY, height*yStride);
-				memcpy(userData.pszData + height*yStride, pU, height* uvStride/2);
-				memcpy(userData.pszData + height*yStride + height* uvStride/2, pV, height* uvStride/2);
-				userData.lPos = pMainDlg->m_pAvi->video_pos;
-				pMainDlg->m_d3d.Push(userData);
-
-				if (tmpW != dec_frame.uWidth || tmpH != dec_frame.uHeight)
-				{
-					LogMsg(WT_EVENTLOG_WARNING_TYPE, _T("Size change-->width: %d, height: %d, stride: %d\n"), dec_frame.uWidth, dec_frame.uHeight, dec_frame.uYStride);
-					tmpW = dec_frame.uWidth;
-					tmpH = dec_frame.uHeight;
-				}
-
-				/*	存储一幅图像	*/
-				if(nullptr !=  yuv )
-				{
-					/*LogMsg(WT_EVENTLOG_INFORMATION_TYPE, _T("PicBytes: %8d, I4:%4d, I8:%4d, 16:%4d, Pskip:%4d, P16:%4d, P16x8:%4d, P8x16:%4d, P8:%4d"), 
-					dec_frame.pFrameInfo->uPicBytes,
-					dec_frame.pFrameInfo->uI4MbNum,
-					dec_frame.pFrameInfo->uI8MbNum,
-					dec_frame.pFrameInfo->uI16MbNum,
-					dec_frame.pFrameInfo->uPskipMbNum,
-					dec_frame.pFrameInfo->uP16MbNum,
-					dec_frame.pFrameInfo->uP16x8MbNum,
-					dec_frame.pFrameInfo->uP8x16MbNum,
-					dec_frame.pFrameInfo->uP8MbNum);*/
-
-					
-					#pragma region 位图存储
-					/*	 位图文件头		*/
-/*BITMAPFILEHEADER bmpFileHeader;
-					ZeroMemory(&bmpFileHeader, sizeof(BITMAPFILEHEADER));
-					bmpFileHeader.bfType = 0x4d42;
-					bmpFileHeader.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD)*256 + width*height;
-					bmpFileHeader.bfReserved1 = 0;
-					bmpFileHeader.bfReserved2 = 0;
-					bmpFileHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD)*256;
-
-					/*	位图信息头		*/
-					/*BITMAPINFOHEADER bmp_infoheader;
-					ZeroMemory(&bmp_infoheader, sizeof(BITMAPINFOHEADER));
-					bmp_infoheader.biSize = sizeof(BITMAPINFOHEADER);
-					bmp_infoheader.biWidth = width;
-					bmp_infoheader.biHeight = height;
-					bmp_infoheader.biPlanes = 1;
-					bmp_infoheader.biBitCount = 8;
-					bmp_infoheader.biCompression = BI_RGB;
-					bmp_infoheader.biSizeImage = 0;			//图像大小，无压缩的数据，这里可以为0
-					bmp_infoheader.biXPelsPerMeter = 0;
-					bmp_infoheader.biYPelsPerMeter = 0;
-					bmp_infoheader.biClrUsed = 0;
-					bmp_infoheader.biClrImportant = 0;
-
-					//	构造灰度图的调色版
-					RGBQUAD rgbquad[256];
-					for(int i = 0; i < 256; i++)
-					{
-						rgbquad[i].rgbBlue = i;
-						rgbquad[i].rgbGreen = i;
-						rgbquad[i].rgbRed = i;
-						rgbquad[i].rgbReserved = 0;
-					}
-
-					fwrite(&bmpFileHeader, sizeof(BITMAPFILEHEADER), 1, yuv);
-					fwrite(&bmp_infoheader, sizeof(BITMAPINFOHEADER), 1, yuv);
-					fwrite(&rgbquad, sizeof(RGBQUAD)*256, 1, yuv);
-					fwrite(pY, height*width, 1, yuv);*/
-					#pragma endregion 位图存储
-
-					/*fwrite(pY, 1, height* yStride, yuv);
-					fwrite(pU, 1, height* uvStride/2, yuv);
-					fwrite(pV, 1, height* uvStride/2, yuv);*/
-				}
-			}
-			/* 继续解码剩余的码流 */
-			result = Hi264DecFrame(hDecoder, NULL, 0, 0, &dec_frame, flags);
-		}
-	}
-
-	LARGE_INTEGER timeEnd;
-	QueryPerformanceCounter(&timeEnd);
-	HI_U32 time = (HI_U32)((timeEnd.QuadPart - timeStart.QuadPart)*1000/lpFrequency.QuadPart);
-	LogMsg(WT_EVENTLOG_INFORMATION_TYPE, _T("time= %d ms \nframes = %d \nfps = %d"), time, pic_cnt, pic_cnt*1000/(time+1));
-
-	/* 销毁解码器，释放句柄 */
-	Hi264DecDestroy(hDecoder);
-	hDecoder = nullptr;
-
-exit:
-
-	if (pMainDlg->m_pAvi != nullptr)
-	{
-		AVI_close(pMainDlg->m_pAvi);
-	}
-	if (yuv != nullptr)
-	{
-		fclose(yuv);
-		yuv = nullptr;
-	}
-
-	return 0;
 }
 
 void CMainWndDlg::LogMsgShow( WT_EVENTLOG_TYPE emType, SYSTEMTIME stTime, LPCTSTR lpszMsg )

@@ -10,11 +10,19 @@ const int MAX_MEMORY_POOL = 24;
 typedef struct _tagUserData
 {
 	long lPos;
+	unsigned long ulWidth;
+	unsigned long ulHeight;
+	unsigned long ulYStride;
+	unsigned long ulUVStride;
 	char* pszData;
 
 	_tagUserData()
 	{
 		lPos = 0;
+		ulWidth = 0;
+		ulHeight = 0;
+		ulYStride = 0;
+		ulUVStride = 0;
 		pszData = nullptr;
 	}
 }USERDATA, *LPUSERDATA;
@@ -37,6 +45,7 @@ public:
 
 	void Push(USERDATA userData);
 	void Clear(void);
+	void Front(USERDATA& userData);
 
 private:
 	long					m_lPos;
